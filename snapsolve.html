@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Snap Solve</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one-screen app. Top two-thirds = the scanned page (or crop editor); bottom third = live camera with page outline / answer; shutter pinned to the bottom edge. */
+:root {
+  --bg: #000000;
+  --panel: #0a0a0a;
+  --fg: #f2f2f2;
+  --muted: #8a8a8a;
+  --line: #262626;
+  --press: #1c1c1c;
+  --scan-edge: #6fd3a8;
+  --danger: #ff7a68;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px;
+  display: grid; grid-template-rows: 2fr 1fr; overflow: hidden;
+  padding-top: env(safe-area-inset-top, 0px);
+  -webkit-tap-highlight-color: transparent;
+}
+[hidden] { display: none !important; }
+button { -webkit-user-select: none; user-select: none; }
+
+/* Top stage */
+.stage {
+  position: relative; min-height: 0;
+  display: flex; flex-direction: column; gap: 10px;
+  padding-block: 14px 10px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.brand { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.brand h1 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 1.5rem; letter-spacing: -0.01em; }
+.brand-right { display: flex; align-items: center; gap: 10px; }
+#status { font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; text-align: right; }
+.shot { flex: 1; min-height: 0; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 10px; overflow: hidden; }
+.shot > img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.shot p { margin: 0; max-width: 30ch; text-align: center; color: var(--muted); line-height: 1.5; text-wrap: balance; }
+.editor { position: relative; }
+.editor img { width: 100%; height: 100%; display: block; }
+.editor svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+.tools { display: flex; justify-content: flex-end; gap: 8px; min-height: 36px; }
+.hint { margin-right: auto; align-self: center; font-size: 0.8rem; color: var(--muted); }
+
+/* Bottom third */
+.panel { background: var(--panel); border-top: 1px solid var(--line); min-height: 0; display: grid; grid-template-rows: 1fr auto; }
+.view { position: relative; min-height: 0; overflow: hidden; }
+.cam { position: absolute; inset: 0; background: #000; }
+.cam video, .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.cam video { object-fit: cover; }
+.cam canvas { pointer-events: none; }
+.scroll {
+  position: absolute; inset: 0; overflow-y: auto;
+  padding-block: 14px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.label { font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 6px; }
+.label.err { color: var(--danger); }
+.text { white-space: pre-wrap; line-height: 1.55; max-width: 65ch; font-size: 1rem; }
+.text.thinking { color: var(--muted); }
+
+/* Key form */
+.keyform { display: flex; flex-direction: column; gap: 8px; max-width: 32rem; }
+.keyform p { margin: 0; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
+.keyrow { display: flex; gap: 8px; }
+.keyrow input {
+  flex: 1; min-width: 0; font: 400 0.95rem var(--font-mono); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px;
+}
+.keyrow input:focus-visible { outline: 2px solid var(--scan-edge); outline-offset: 1px; }
+
+/* Shutter bar */
+.bar {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  padding-top: 10px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.shutter {
+  width: 64px; height: 64px; border-radius: 50%; border: 3px solid var(--fg);
+  background: var(--bg); cursor: pointer; padding: 0; transition: transform .12s, background-color .12s;
+}
+.shutter:active { transform: scale(.93); background: var(--press); }
+.shutter:disabled { opacity: .4; cursor: default; }
+.shutter:focus-visible, .ghost:focus-visible { outline: 3px solid var(--scan-edge); outline-offset: 3px; }
+.ghost {
+  font: 500 0.85rem var(--font-body); color: var(--fg); background: transparent;
+  border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; cursor: pointer;
+}
+.ghost:active { background: var(--press); }
+.ghost.small { padding: 4px 10px; font-size: 0.75rem; }
+.side { width: 84px; display: flex; justify-content: center; }
+@media (prefers-reduced-motion: reduce) { .shutter { transition: none; } }
+</style>
+</head>
+<body>
+
+<section class="stage">
+  <div class="brand">
+    <h1>Snap Solve</h1>
+    <div class="brand-right"><span id="status">Ready</span><button class="ghost small" id="keyBtn" type="button">Key</button></div>
+  </div>
+  <div class="shot" id="shot"><p>Tap the button below to open the camera. Line up the page until the green outline locks on, then tap again.</p></div>
+  <div class="tools">
+    <span class="hint" id="hint" hidden>Drag the corners to the page edges</span>
+    <button class="ghost" id="adjustBtn" type="button" hidden>Adjust crop</button>
+    <button class="ghost" id="editCancel" type="button" hidden>Cancel</button>
+    <button class="ghost" id="editApply" type="button" hidden>Use crop</button>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="view">
+    <div class="cam" id="cam" hidden>
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div class="scroll" id="answerBox">
+      <div class="label" id="ansLabel">Answer</div>
+      <div class="text thinking" id="ansText">No photo yet.</div>
+    </div>
+    <form class="scroll keyform" id="keyForm" hidden>
+      <div class="label">Anthropic API key</div>
+      <p>Paste a key from console.anthropic.com. It's saved only in this browser on this device and is sent only to Anthropic.</p>
+      <div class="keyrow">
+        <input id="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
+        <button class="ghost" type="submit">Save</button>
+      </div>
+      <p id="keyMsg"></p>
+    </form>
+  </div>
+  <div class="bar">
+    <div class="side"><button class="ghost" id="cancelBtn" type="button" hidden>Cancel</button></div>
+    <button class="shutter" id="shutter" type="button" aria-label="Open camera"></button>
+    <div class="side"><button class="ghost" id="stopBtn" type="button" hidden>Stop</button></div>
+  </div>
+  <input id="fileInput" type="file" accept="image/*" capture="environment" hidden>
+</section>
+
+<script>
+const MODEL = "claude-opus-5-5";
+const KEY_STORE = "snapsolve.apiKey";
+const PROMPT =
+  "The image is a scanned page containing a problem (math, science, a question, a puzzle, or similar). " +
+  "Solve it. Reply with the final answer first, then only the essential steps needed to reach it, " +
+  "one short line each. No preamble, no restating the problem, no extra explanation, no closing remarks. " +
+  "Keep it under 80 words. Plain text, no markdown. If there are several problems, answer each one briefly, numbered. " +
+  "If the image has no readable problem, say so in one line.";
+
+const $ = id => document.getElementById(id);
+const video = $("video"), overlay = $("overlay"), cam = $("cam");
+const answerBox = $("answerBox"), ansText = $("ansText"), ansLabel = $("ansLabel");
+const keyForm = $("keyForm"), keyInput = $("keyInput"), keyMsg = $("keyMsg"), keyBtn = $("keyBtn");
+const shutter = $("shutter"), cancelBtn = $("cancelBtn"), stopBtn = $("stopBtn"), fileInput = $("fileInput");
+const statusEl = $("status"), shot = $("shot");
+const adjustBtn = $("adjustBtn"), editCancel = $("editCancel"), editApply = $("editApply"), hint = $("hint");
+
+let stream = null, ctl = null, urls = [], current = null;
+
+/* ---------- Key storage ---------- */
+function getKey() { try { return localStorage.getItem(KEY_STORE) || ""; } catch { return ""; } }
+function setKey(k) { try { localStorage.setItem(KEY_STORE, k); return true; } catch { return false; } }
+let memKey = getKey();
+function showKeyForm(msg = "") {
+  stopCamera(); answerBox.hidden = true; keyForm.hidden = false;
+  keyInput.value = ""; keyMsg.textContent = msg; keyMsg.style.color = msg ? "var(--danger)" : "";
+  setStatus("Key needed");
+}
+function hideKeyForm() { keyForm.hidden = true; answerBox.hidden = false; }
+keyForm.addEventListener("submit", e => {
+  e.preventDefault();
+  const k = keyInput.value.trim();
+  if (!k.startsWith("sk-")) { keyMsg.textContent = "That doesn't look like an API key. It should start with sk-ant-."; keyMsg.style.color = "var(--danger)"; return; }
+  memKey = k; setKey(k); hideKeyForm(); setStatus("Ready");
+  showAnswer("Answer", "Key saved. Tap the button below to scan a page.", { muted: true });
+});
+keyBtn.addEventListener("click", () => keyForm.hidden ? showKeyForm() : (hideKeyForm(), setStatus("Ready")));
+
+/* ---------- UI helpers ---------- */
+function setStatus(t) { statusEl.textContent = t; }
+function showAnswer(label, text, opts = {}) {
+  cam.hidden = true; keyForm.hidden = true; answerBox.hidden = false;
+  ansLabel.textContent = label; ansLabel.classList.toggle("err", !!opts.error);
+  ansText.textContent = text; ansText.classList.toggle("thinking", !!opts.muted);
+}
+function setTools(mode) {
+  adjustBtn.hidden = mode !== "scan";
+  editCancel.hidden = editApply.hidden = hint.hidden = mode !== "edit";
+}
+function objUrl(blob) { const u = URL.createObjectURL(blob); urls.push(u); while (urls.length > 4) URL.revokeObjectURL(urls.shift()); return u; }
+function canvasBlob(c, q = 0.9) { return new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("encode")), "image/jpeg", q)); }
+
+/* ---------- Page detection ---------- */
+function polyArea(q) { let a = 0; for (let i = 0; i < q.length; i++) { const p = q[i], n = q[(i + 1) % q.length]; a += p.x * n.y - n.x * p.y; } return Math.abs(a) / 2; }
+function orderQuad(pts) {
+  const cx = pts.reduce((s, p) => s + p.x, 0) / 4, cy = pts.reduce((s, p) => s + p.y, 0) / 4;
+  const sorted = pts.slice().sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+  let k = 0; sorted.forEach((p, i) => { if (p.x + p.y < sorted[k].x + sorted[k].y) k = i; });
+  return [0, 1, 2, 3].map(i => sorted[(k + i) % 4]);
+}
+function isConvex(q) {
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+    const z = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(z) < 1e-6) return false;
+    if (!sign) sign = Math.sign(z); else if (Math.sign(z) !== sign) return false;
+  }
+  return true;
+}
+const detCanvas = document.createElement("canvas");
+const detCtx = detCanvas.getContext("2d", { willReadFrequently: true });
+// src: canvas or video; sw/sh: its pixel size; S: working resolution.
+function detectPage(src, sw, sh, S = 480) {
+  const s = Math.min(1, S / Math.max(sw, sh));
+  const w = Math.max(8, Math.round(sw * s)), h = Math.max(8, Math.round(sh * s)), N = w * h;
+  detCanvas.width = w; detCanvas.height = h; detCtx.drawImage(src, 0, 0, w, h);
+  const d = detCtx.getImageData(0, 0, w, h).data;
+  const g = new Float32Array(N);
+  for (let i = 0; i < N; i++) g[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+  const r = Math.max(2, Math.round(w / 160)), tmp = new Float32Array(N);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let sum = 0, n = 0; for (let k = -r; k <= r; k++) { const xx = x + k; if (xx >= 0 && xx < w) { sum += g[y * w + xx]; n++; } }
+    tmp[y * w + x] = sum / n;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let sum = 0, n = 0; for (let k = -r; k <= r; k++) { const yy = y + k; if (yy >= 0 && yy < h) { sum += tmp[yy * w + x]; n++; } }
+    g[y * w + x] = sum / n;
+  }
+  const hist = new Array(256).fill(0); for (let i = 0; i < N; i++) hist[g[i] | 0]++;
+  let total = 0; for (let t = 0; t < 256; t++) total += t * hist[t];
+  let wB = 0, sumB = 0, best = 0, thr = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (!wB) continue; const wF = N - wB; if (!wF) break;
+    sumB += t * hist[t]; const mB = sumB / wB, mF = (total - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF); if (v > best) { best = v; thr = t; }
+  }
+  const label = new Int32Array(N), stack = new Int32Array(N);
+  let bestReg = null, id = 0;
+  for (let start = 0; start < N; start++) {
+    if (label[start] || g[start] <= thr) continue;
+    id++; let sp = 0; stack[sp++] = start; label[start] = id;
+    const R = { area: 0 };
+    const upd = (key, x, y, val, less) => { const c = R[key]; if (!c || (less ? val < c.v : val > c.v)) R[key] = { v: val, x, y }; };
+    while (sp) {
+      const i = stack[--sp], x = i % w, y = (i / w) | 0;
+      R.area++;
+      upd("minS", x, y, x + y, true); upd("maxS", x, y, x + y, false);
+      upd("minD", x, y, x - y, true); upd("maxD", x, y, x - y, false);
+      upd("minX", x, y, x, true); upd("maxX", x, y, x, false);
+      upd("minY", x, y, y, true); upd("maxY", x, y, y, false);
+      if (x > 0 && !label[i - 1] && g[i - 1] > thr) { label[i - 1] = id; stack[sp++] = i - 1; }
+      if (x < w - 1 && !label[i + 1] && g[i + 1] > thr) { label[i + 1] = id; stack[sp++] = i + 1; }
+      if (y > 0 && !label[i - w] && g[i - w] > thr) { label[i - w] = id; stack[sp++] = i - w; }
+      if (y < h - 1 && !label[i + w] && g[i + w] > thr) { label[i + w] = id; stack[sp++] = i + w; }
+    }
+    if (!bestReg || R.area > bestReg.area) bestReg = R;
+  }
+  if (!bestReg || bestReg.area < N * 0.12) return null;
+  const pt = o => ({ x: o.x, y: o.y });
+  const qa = [pt(bestReg.minS), pt(bestReg.maxD), pt(bestReg.maxS), pt(bestReg.minD)];
+  const qb = orderQuad([pt(bestReg.minY), pt(bestReg.maxX), pt(bestReg.maxY), pt(bestReg.minX)]);
+  const cands = [qa, qb].filter(isConvex);
+  if (!cands.length) return null;
+  const q = cands.reduce((a, b) => polyArea(b) > polyArea(a) ? b : a);
+  const A = polyArea(q);
+  if (A < N * 0.12 || A > N * 0.97) return null;
+  return q.map(p => ({ x: (p.x + 0.5) / s, y: (p.y + 0.5) / s }));
+}
+
+/* ---------- Flatten + scan look ---------- */
+function solve8(A, b) {
+  const n = 8; A = A.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    [A[c], A[p]] = [A[p], A[c]];
+    for (let r = 0; r < n; r++) if (r !== c) { const f = A[r][c] / A[c][c]; for (let k = c; k <= n; k++) A[r][k] -= f * A[c][k]; }
+  }
+  return A.map((row, i) => row[n] / row[i]);
+}
+function warpPage(src, q) {
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  let W = Math.max(dist(q[0], q[1]), dist(q[3], q[2])), H = Math.max(dist(q[0], q[3]), dist(q[1], q[2]));
+  const s = Math.min(1, 1800 / Math.max(W, H)); W = Math.max(1, Math.round(W * s)); H = Math.max(1, Math.round(H * s));
+  const dst = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const { x: u, y: v } = dst[i], { x, y } = q[i];
+    A.push([u, v, 1, 0, 0, 0, -u * x, -v * x]); b.push(x);
+    A.push([0, 0, 0, u, v, 1, -u * y, -v * y]); b.push(y);
+  }
+  const [h0, h1, h2, h3, h4, h5, h6, h7] = solve8(A, b);
+  const sw = src.width, sh = src.height;
+  const sd = src.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, sw, sh).data;
+  const out = document.createElement("canvas"); out.width = W; out.height = H;
+  const octx = out.getContext("2d"), od = octx.createImageData(W, H), o = od.data;
+  for (let y = 0; y < H; y++) {
+    const v = y + 0.5;
+    for (let x = 0; x < W; x++) {
+      const u = x + 0.5, den = h6 * u + h7 * v + 1;
+      let sx = (h0 * u + h1 * v + h2) / den - 0.5, sy = (h3 * u + h4 * v + h5) / den - 0.5;
+      sx = Math.min(sw - 1.001, Math.max(0, sx)); sy = Math.min(sh - 1.001, Math.max(0, sy));
+      const x0 = sx | 0, y0 = sy | 0, fx = sx - x0, fy = sy - y0;
+      const i00 = (y0 * sw + x0) * 4, i10 = i00 + 4, i01 = i00 + sw * 4, i11 = i01 + 4, oi = (y * W + x) * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const top = sd[i00 + ch] + (sd[i10 + ch] - sd[i00 + ch]) * fx;
+        const bot = sd[i01 + ch] + (sd[i11 + ch] - sd[i01 + ch]) * fx;
+        o[oi + ch] = top + (bot - top) * fy;
+      }
+      o[oi + 3] = 255;
+    }
+  }
+  octx.putImageData(od, 0, 0);
+  return out;
+}
+function scanLook(c) {
+  const ctx = c.getContext("2d", { willReadFrequently: true }), id = ctx.getImageData(0, 0, c.width, c.height), d = id.data;
+  const hist = new Array(256).fill(0), N = d.length / 4;
+  for (let i = 0; i < d.length; i += 4) hist[(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0]++;
+  const pct = p => { let acc = 0; for (let t = 0; t < 256; t++) { acc += hist[t]; if (acc >= N * p) return t; } return 255; };
+  const lo = pct(0.02), hi = Math.max(lo + 40, pct(0.80) - 4), k = 255 / (hi - lo);
+  for (let i = 0; i < d.length; i += 4) for (let ch = 0; ch < 3; ch++) d[i + ch] = Math.max(0, Math.min(255, (d[i + ch] - lo) * k));
+  ctx.putImageData(id, 0, 0);
+  return c;
+}
+function fitCanvas(src, maxSide) {
+  const sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
+  const s = Math.min(1, maxSide / Math.max(sw, sh));
+  const c = document.createElement("canvas"); c.width = Math.round(sw * s); c.height = Math.round(sh * s);
+  c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+
+/* ---------- Live camera with page outline ---------- */
+let liveQuad = null, liveTimer = 0, rafId = 0;
+async function openCamera() {
+  if (!memKey) { showKeyForm(); return; }
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("no camera api");
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false,
+    });
+    video.srcObject = stream; await video.play();
+    answerBox.hidden = true; keyForm.hidden = true; cam.hidden = false; cancelBtn.hidden = false;
+    shutter.setAttribute("aria-label", "Take photo"); setStatus("Find the page");
+    liveQuad = null; liveLoop();
+  } catch {
+    stream = null; fileInput.value = ""; fileInput.click();
+  }
+}
+function stopCamera() {
+  cancelAnimationFrame(rafId); rafId = 0;
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  video.srcObject = null; cam.hidden = true;
+  cancelBtn.hidden = true; shutter.setAttribute("aria-label", "Open camera");
+}
+function liveLoop(ts = 0) {
+  if (!stream) return;
+  rafId = requestAnimationFrame(liveLoop);
+  if (!video.videoWidth) return;
+  if (ts - liveTimer > 120) {
+    liveTimer = ts;
+    let q = null; try { q = detectPage(video, video.videoWidth, video.videoHeight, 240); } catch {}
+    if (q && liveQuad) liveQuad = liveQuad.map((p, i) => ({ x: p.x + (q[i].x - p.x) * 0.5, y: p.y + (q[i].y - p.y) * 0.5 }));
+    else liveQuad = q;
+    setStatus(liveQuad ? "Page found" : "Find the page");
+  }
+  drawOverlay();
+}
+function drawOverlay() {
+  const r = overlay.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  if (overlay.width !== W || overlay.height !== H) { overlay.width = W; overlay.height = H; }
+  const ctx = overlay.getContext("2d"); ctx.clearRect(0, 0, W, H);
+  if (!liveQuad) return;
+  // Map video pixels to the object-fit: cover display box.
+  const vw = video.videoWidth, vh = video.videoHeight, s = Math.max(W / vw, H / vh);
+  const ox = (W - vw * s) / 2, oy = (H - vh * s) / 2;
+  const P = liveQuad.map(p => ({ x: p.x * s + ox, y: p.y * s + oy }));
+  ctx.fillStyle = "rgba(111,211,168,0.18)"; ctx.strokeStyle = "#6fd3a8"; ctx.lineWidth = 3 * dpr; ctx.lineJoin = "round";
+  ctx.beginPath(); P.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+}
+function captureFrame() {
+  const c = document.createElement("canvas");
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext("2d").drawImage(video, 0, 0);
+  return c;
+}
+
+/* ---------- Pipeline ---------- */
+function loadImage(blob) {
+  return new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = () => rej(new Error("decode")); img.src = objUrl(blob); });
+}
+function defaultQuad(src) {
+  const mx = src.width * 0.06, my = src.height * 0.06;
+  return [{ x: mx, y: my }, { x: src.width - mx, y: my }, { x: src.width - mx, y: src.height - my }, { x: mx, y: src.height - my }];
+}
+async function handleCanvas(src, hintQuad) {
+  exitEditor(false);
+  setStatus("Scanning");
+  let quad = null; try { quad = detectPage(src, src.width, src.height, 480); } catch {}
+  if (!quad && hintQuad) quad = hintQuad;
+  const blob = await canvasBlob(src, 0.92);
+  current = { src, blob, quad: quad || defaultQuad(src), found: !!quad };
+  await runScan();
+}
+async function handleFile(file) {
+  let img;
+  try { img = await loadImage(file); }
+  catch { showAnswer("Couldn't read photo", "That image couldn't be opened. Try taking it again.", { error: true }); setStatus("Error"); return; }
+  handleCanvas(fitCanvas(img, 2400));
+}
+async function runScan() {
+  let scanned;
+  try { scanned = scanLook(current.found ? warpPage(current.src, current.quad) : fitCanvas(current.src, 1800)); }
+  catch { scanned = current.src; }
+  const display = await canvasBlob(scanned, 0.9);
+  shot.replaceChildren(Object.assign(new Image(), { src: objUrl(display), alt: "Scanned page" }));
+  setTools("scan");
+  setStatus(current.found ? "Page found" : "No edge found");
+  solve(scanned);
+}
+
+/* ---------- Crop editor ---------- */
+let editQuad = null, dragIdx = -1;
+const NS = "http://www.w3.org/2000/svg";
+function openEditor() {
+  if (!current) return;
+  ctl?.abort();
+  editQuad = current.quad.map(p => ({ ...p }));
+  const { width: W, height: H } = current.src;
+  const wrap = document.createElement("div"); wrap.className = "editor";
+  const img = new Image(); img.src = objUrl(current.blob); img.alt = "Original photo";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("preserveAspectRatio", "none");
+  const rad = Math.max(W, H) * 0.028, stroke = Math.max(W, H) * 0.006;
+  const shade = document.createElementNS(NS, "path");
+  shade.setAttribute("fill", "rgba(0,0,0,0.5)"); shade.setAttribute("fill-rule", "evenodd");
+  const poly = document.createElementNS(NS, "polygon");
+  poly.setAttribute("fill", "none"); poly.setAttribute("stroke", "#6fd3a8"); poly.setAttribute("stroke-width", stroke);
+  svg.append(shade, poly);
+  const dots = editQuad.map(() => {
+    const c = document.createElementNS(NS, "circle");
+    c.setAttribute("r", rad); c.setAttribute("fill", "#000"); c.setAttribute("stroke", "#6fd3a8"); c.setAttribute("stroke-width", stroke);
+    svg.append(c); return c;
+  });
+  const draw = () => {
+    poly.setAttribute("points", editQuad.map(p => `${p.x},${p.y}`).join(" "));
+    shade.setAttribute("d", `M0 0H${W}V${H}H0Z M${editQuad.map(p => `${p.x} ${p.y}`).join(" L")}Z`);
+    dots.forEach((c, i) => { c.setAttribute("cx", editQuad[i].x); c.setAttribute("cy", editQuad[i].y); });
+  };
+  const toLocal = e => { const r = svg.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H }; };
+  svg.addEventListener("pointerdown", e => {
+    const p = toLocal(e); let best = Infinity;
+    editQuad.forEach((q, i) => { const dd = Math.hypot(q.x - p.x, q.y - p.y); if (dd < best) { best = dd; dragIdx = i; } });
+    if (best > Math.max(W, H) * 0.15) { dragIdx = -1; return; }
+    svg.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  svg.addEventListener("pointermove", e => {
+    if (dragIdx < 0) return; const p = toLocal(e);
+    editQuad[dragIdx] = { x: Math.max(0, Math.min(W, p.x)), y: Math.max(0, Math.min(H, p.y)) }; draw();
+  });
+  const end = () => { dragIdx = -1; };
+  svg.addEventListener("pointerup", end); svg.addEventListener("pointercancel", end);
+  wrap.append(img, svg); shot.replaceChildren(wrap);
+  sizeEditor(); draw();
+  setTools("edit"); setStatus("Adjust crop");
+}
+function sizeEditor() {
+  const wrap = shot.querySelector(".editor"); if (!wrap || !current) return;
+  const box = shot.getBoundingClientRect(), ar = current.src.width / current.src.height;
+  let w = box.width - 2, h = w / ar; if (h > box.height - 2) { h = box.height - 2; w = h * ar; }
+  wrap.style.width = w + "px"; wrap.style.height = h + "px";
+}
+function exitEditor(restore) {
+  if (!shot.querySelector(".editor")) return;
+  editQuad = null; setTools(current ? "scan" : "none");
+  if (restore && current) runScan();
+}
+window.addEventListener("resize", sizeEditor);
+adjustBtn.addEventListener("click", openEditor);
+editCancel.addEventListener("click", () => exitEditor(true));
+editApply.addEventListener("click", () => {
+  const q = orderQuad(editQuad);
+  if (!isConvex(q) || polyArea(q) < 100) { setStatus("Corners overlap"); return; }
+  current.quad = q; current.found = true; editQuad = null; runScan();
+});
+
+/* ---------- Claude API (Opus 5.5, streaming) ---------- */
+async function toBase64(canvas) {
+  const c = fitCanvas(canvas, 1568);
+  const blob = await canvasBlob(c, 0.88);
+  return await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(",")[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
+}
+function apiError(status, msg) {
+  if (status === 401) return { key: true, text: "Anthropic rejected the API key. Tap Key to enter a new one." };
+  if (status === 403) return { text: "This API key doesn't have access to Opus 5.5." };
+  if (status === 404) return { text: "Opus 5.5 isn't available to this API key." };
+  if (status === 429) return { text: "Rate limit reached. Wait a minute, then try again." };
+  if (status === 529) return { text: "Claude is overloaded right now. Try again in a moment." };
+  if (status === 400 && /credit|billing/i.test(msg || "")) return { text: "Your API account is out of credit. Add credit at console.anthropic.com." };
+  return { text: msg ? `Request failed: ${msg}` : "Something went wrong. Check your connection and try again." };
+}
+async function solve(canvas) {
+  if (!memKey) { showKeyForm(); return; }
+  ctl?.abort();
+  const my = new AbortController(); ctl = my;
+  shutter.disabled = true; stopBtn.hidden = false;
+  showAnswer("Answer · Opus 5.5", "Thinking…", { muted: true });
+  let text = "";
+  try {
+    const data = await toBase64(canvas);
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST", signal: my.signal,
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": memKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: MODEL, max_tokens: 8000, stream: true,
+        messages: [{ role: "user", content: [
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
+          { type: "text", text: PROMPT },
+        ] }],
+      }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => null);
+      throw { status: res.status, message: j?.error?.message };
+    }
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "", modelUsed = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        const line = chunk.split("\n").find(l => l.startsWith("data:"));
+        if (!line) continue;
+        let ev; try { ev = JSON.parse(line.slice(5)); } catch { continue; }
+        if (ev.type === "message_start") modelUsed = ev.message?.model || "";
+        else if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+          text += ev.delta.text; showAnswer("Answer · Opus 5.5", text);
+        } else if (ev.type === "error") throw { status: ev.error?.type === "overloaded_error" ? 529 : 500, message: ev.error?.message };
+      }
+    }
+    if (!text.trim()) throw { status: 500, message: "No answer came back. Try a clearer photo." };
+    setStatus(modelUsed.startsWith(MODEL) ? "Done · Opus 5.5" : "Done");
+  } catch (e) {
+    if (my.signal.aborted) {
+      if (ctl === my) showAnswer("Stopped", text || "Stopped before an answer.", { muted: !text });
+    } else {
+      const err = apiError(e?.status, e?.message || (e instanceof TypeError ? "Couldn't reach Anthropic. Check your connection." : ""));
+      if (err.key) { showKeyForm(err.text); }
+      else { showAnswer("Couldn't solve", (text ? text + "\n\n" : "") + err.text, { error: true }); setStatus("Error"); }
+    }
+  } finally {
+    if (ctl === my) { shutter.disabled = false; stopBtn.hidden = true; ctl = null; }
+  }
+}
+
+/* ---------- Wiring ---------- */
+shutter.addEventListener("click", () => {
+  if (stream) {
+    const frame = captureFrame(), hintQuad = liveQuad && liveQuad.map(p => ({ ...p }));
+    stopCamera();
+    handleCanvas(frame, hintQuad);
+  } else {
+    openCamera();
+  }
+});
+cancelBtn.addEventListener("click", () => { stopCamera(); answerBox.hidden = false; setStatus("Ready"); });
+stopBtn.addEventListener("click", () => ctl?.abort());
+fileInput.addEventListener("change", () => { const f = fileInput.files?.[0]; if (f) handleFile(f); });
+document.addEventListener("visibilitychange", () => { if (document.hidden && stream) { stopCamera(); answerBox.hidden = false; setStatus("Ready"); } });
+
+if (!memKey) showKeyForm();
+</script>
+</body>
+</html>
