@@ -63,10 +63,20 @@ button { -webkit-user-select: none; user-select: none; }
 /* Bottom third */
 .panel { position: relative; background: var(--panel); border-top: 1px solid var(--line); min-height: 0; display: grid; grid-template-rows: 1fr auto; }
 .panel.reading .bar { display: none; }
-.panel.reading .answer {
-  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px) * 0.5);
-  padding-right: calc(max(16px, env(safe-area-inset-right, 0px)) + 58px);
+/* Reading band: the answer text starts level with the top of the + button and scrolls inside that band. */
+.panel { --band-bottom: calc(8px + env(safe-area-inset-bottom, 0px) * 0.5); --band-h: 76px; --plus-size: 46px; }
+.panel.reading .answer { padding-bottom: var(--band-bottom); }
+#ansText { max-height: var(--band-h); overflow-y: auto; overscroll-behavior: contain; }
+.panel.reading #ansText { padding-right: 60px; }
+.tabs { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 8px; scrollbar-width: none; padding-bottom: 2px; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: none; min-width: 40px; height: 32px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: transparent; color: var(--fg);
+  font: 500 0.85rem var(--font-mono); font-variant-numeric: tabular-nums; cursor: pointer;
 }
+.tab[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.tab:focus-visible { outline: 3px solid var(--scan-edge); outline-offset: 2px; }
 .view { position: relative; z-index: 1; min-height: 0; overflow: hidden; }
 .answer { display: flex; flex-direction: column; }
 .answer-body { margin-top: auto; }
@@ -79,8 +89,8 @@ button { -webkit-user-select: none; user-select: none; }
 .plus {
   position: absolute; z-index: 2;
   right: max(16px, env(safe-area-inset-right, 0px));
-  bottom: calc(8px + env(safe-area-inset-bottom, 0px) * 0.5);
-  width: 46px; height: 46px; border-radius: 50%; border: 2px solid var(--fg); background: var(--bg);
+  bottom: calc(var(--band-bottom) + var(--band-h) - var(--plus-size));
+  width: var(--plus-size); height: var(--plus-size); border-radius: 50%; border: 2px solid var(--fg); background: var(--bg);
   color: var(--fg); font: 300 28px/1 var(--font-body); padding: 0 0 3px; cursor: pointer;
 }
 .plus:active { background: var(--press); }
@@ -103,7 +113,7 @@ button { -webkit-user-select: none; user-select: none; }
 .text h1, .text h2, .text h3, .text h4 { font: 600 1rem var(--font-body); margin: 1em 0 0.35em; }
 .text strong { font-weight: 600; }
 .text .katex { font-size: 1.08em; }
-.text .katex-display { margin: 0.5em 0; overflow-x: auto; overflow-y: hidden; padding-block: 2px; }
+.text .katex-display { margin: 0.25em 0; overflow-x: auto; overflow-y: hidden; padding-block: 2px; }
 .text table { border-collapse: collapse; margin: 0.4em 0 0.8em; font-variant-numeric: tabular-nums; display: block; overflow-x: auto; max-width: 100%; }
 .text th, .text td { border-bottom: 1px solid var(--line); padding: 4px 12px 4px 0; text-align: left; white-space: nowrap; }
 .text th { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
@@ -170,6 +180,7 @@ button { -webkit-user-select: none; user-select: none; }
     <div class="scroll answer" id="answerBox">
       <div class="answer-body">
         <div class="label" id="ansLabel">Answer</div>
+        <div class="tabs" id="tabs" role="tablist" hidden></div>
         <div class="text thinking" id="ansText">No photo yet.</div>
       </div>
     </div>
@@ -199,7 +210,7 @@ const PROMPT = `The image is a scanned page with one or more problems (math, phy
 
 Formatting rules (the reply is rendered as Markdown with LaTeX):
 - Write ALL math in LaTeX: inline as $...$, standalone equations as $$...$$. Use real notation: subscripts ($F_{AB}$), fractions ($\\frac{a}{b}$), exponents, Greek letters, $\\sqrt{}$, $\\cdot$, $\\approx$, and units like $12\\,\\text{kN}$. Never write math as words or ASCII (no "sqrt", "^2", "*", "theta" outside LaTeX).
-- For several problems, start each with a bold label such as **Problem 1**.
+- Begin EACH problem with its own heading line in exactly this form: "## 5" (the problem's number as printed on the page; if unnumbered use 1, 2, 3 in order). Do this even for a single problem. Put nothing before the first heading.
 - Show only the essential steps: the key equations and results, one line each.
 - Bold every final answer. When listing several results (for example member forces), use a compact Markdown table, and mark tension/compression as (T)/(C).
 - No preamble, no restating the problem, no explanations beyond the steps, no closing remarks.
@@ -253,12 +264,58 @@ function renderMd(src) {
     catch { return esc(x.t); }
   });
 }
+/* Sections: one per "## N" heading, each with a tab. */
+const tabsEl = $("tabs");
+let sections = [], active = 0, follow = true, tabsKey = "";
+function parseSections(t) {
+  const heads = [...t.matchAll(/^##\s+(.+)$/gm)];
+  if (!heads.length) return [{ tab: "", body: t }];
+  const out = heads.map((h, i) => {
+    const end = i + 1 < heads.length ? heads[i + 1].index : t.length;
+    const title = h[1].replace(/[*_`]/g, "").trim();
+    const num = (title.match(/\d+[a-z]?/i) || [String(i + 1)])[0];
+    return { tab: num, body: t.slice(h.index + h[0].length, end).trim() };
+  });
+  const pre = t.slice(0, heads[0].index).trim();
+  if (pre) out[0].body = pre + "\n\n" + out[0].body;
+  return out;
+}
+function drawSections() {
+  const multi = sections.length > 1;
+  tabsEl.hidden = !multi;
+  const key = sections.map(s => s.tab).join("|") + "#" + active;
+  if (multi && key !== tabsKey) {
+    tabsKey = key;
+    tabsEl.replaceChildren(...sections.map((s, i) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "tab"; b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", String(i === active)); b.textContent = s.tab;
+      b.addEventListener("click", () => { active = i; follow = false; drawSections(); ansText.scrollTop = 0; });
+      return b;
+    }));
+    tabsEl.children[active]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+  const sec = sections[active];
+  ansLabel.textContent = (multi || sec.tab ? `Problem ${sec.tab || active + 1}` : "Answer") + " · Opus 5.5";
+  ansText.innerHTML = renderMd(sec.body || "…");
+}
 function showAnswer(label, text, opts = {}) {
   cam.hidden = true; keyForm.hidden = true; answerBox.hidden = false;
-  ansLabel.textContent = label; ansLabel.classList.toggle("err", !!opts.error);
+  ansLabel.classList.toggle("err", !!opts.error);
   ansText.classList.toggle("thinking", !!opts.muted);
   ansText.classList.toggle("plain", !opts.md);
-  if (opts.md) ansText.innerHTML = renderMd(text); else ansText.textContent = text;
+  if (opts.md) {
+    sections = parseSections(text);
+    if (opts.done && follow) { active = 0; follow = false; }
+    else if (follow) active = sections.length - 1;
+    active = Math.min(active, sections.length - 1);
+    drawSections();
+    if (opts.done) ansText.scrollTop = 0;
+    else if (follow) ansText.scrollTop = ansText.scrollHeight;
+  } else {
+    sections = []; tabsKey = ""; tabsEl.hidden = true;
+    ansLabel.textContent = label; ansText.textContent = text;
+  }
 }
 // Reading mode: answer fills the panel to the bottom; the shutter hides behind a + button.
 function setReading(on) { panel.classList.toggle("reading", on); plusBtn.hidden = !on; }
@@ -588,7 +645,7 @@ async function solve(canvas) {
   if (!memKey) { showKeyForm(); return; }
   ctl?.abort();
   const my = new AbortController(); ctl = my;
-  setReading(false);
+  setReading(false); follow = true; active = 0;
   shutter.disabled = true; stopBtn.hidden = false;
   showAnswer("Answer · Opus 5.5", "Thinking…", { muted: true });
   let text = "", paint = 0;
@@ -635,7 +692,7 @@ async function solve(canvas) {
     }
     if (!text.trim()) throw { status: 500, message: "No answer came back. Try a clearer photo." };
     cancelAnimationFrame(paint); paint = 0;
-    showAnswer("Answer · Opus 5.5", text, { md: true });
+    showAnswer("Answer · Opus 5.5", text, { md: true, done: true });
     setStatus(modelUsed.startsWith(MODEL) ? "Done · Opus 5.5" : "Done");
     setReading(true);
   } catch (e) {
