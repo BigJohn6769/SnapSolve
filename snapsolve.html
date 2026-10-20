@@ -63,9 +63,17 @@ button { -webkit-user-select: none; user-select: none; }
 /* Bottom third */
 .panel { position: relative; background: var(--panel); border-top: 1px solid var(--line); min-height: 0; display: grid; grid-template-rows: 1fr auto; }
 .panel.reading .bar { display: none; }
-.panel.reading .scroll { padding-bottom: calc(70px + env(safe-area-inset-bottom, 0px)); }
-.view { position: relative; min-height: 0; overflow: hidden; }
-.cam { position: absolute; inset: 0; background: #000; }
+.panel.reading .answer {
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px) * 0.5);
+  padding-right: calc(max(16px, env(safe-area-inset-right, 0px)) + 58px);
+}
+.view { position: relative; z-index: 1; min-height: 0; overflow: hidden; }
+.answer { display: flex; flex-direction: column; }
+.answer-body { margin-top: auto; }
+.cam { position: absolute; inset: 0; z-index: 0; background: #000; }
+.panel.camera .view { visibility: hidden; }
+.panel.camera .bar { background: transparent; }
+.panel.camera .ghost { background: rgba(0, 0, 0, 0.55); border-color: rgba(255, 255, 255, 0.35); }
 .cam video, .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .cam video { object-fit: contain; }
 .plus {
@@ -113,6 +121,7 @@ button { -webkit-user-select: none; user-select: none; }
 
 /* Shutter bar */
 .bar {
+  position: relative; z-index: 1;
   display: flex; align-items: center; justify-content: center; gap: 14px;
   padding-top: 6px;
   padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px) * 0.5);
@@ -153,14 +162,16 @@ button { -webkit-user-select: none; user-select: none; }
 </section>
 
 <section class="panel">
+  <div class="cam" id="cam" hidden>
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+  </div>
   <div class="view">
-    <div class="cam" id="cam" hidden>
-      <video id="video" playsinline muted autoplay></video>
-      <canvas id="overlay"></canvas>
-    </div>
-    <div class="scroll" id="answerBox">
-      <div class="label" id="ansLabel">Answer</div>
-      <div class="text thinking" id="ansText">No photo yet.</div>
+    <div class="scroll answer" id="answerBox">
+      <div class="answer-body">
+        <div class="label" id="ansLabel">Answer</div>
+        <div class="text thinking" id="ansText">No photo yet.</div>
+      </div>
     </div>
     <form class="scroll keyform" id="keyForm" hidden>
       <div class="label">Anthropic API key</div>
@@ -412,6 +423,7 @@ async function openCamera() {
     });
     video.srcObject = stream; await video.play();
     answerBox.hidden = true; keyForm.hidden = true; cam.hidden = false; cancelBtn.hidden = false;
+    panel.classList.add("camera");
     shutter.setAttribute("aria-label", "Take photo"); setStatus("Find the page");
     liveQuad = null; liveLoop();
   } catch {
@@ -421,7 +433,7 @@ async function openCamera() {
 function stopCamera() {
   cancelAnimationFrame(rafId); rafId = 0;
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-  video.srcObject = null; cam.hidden = true;
+  video.srcObject = null; cam.hidden = true; panel.classList.remove("camera");
   cancelBtn.hidden = true; shutter.setAttribute("aria-label", "Open camera");
 }
 function liveLoop(ts = 0) {
