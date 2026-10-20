@@ -9,6 +9,9 @@
 <title>Snap Solve</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <style>
 /* Layout: one-screen app. Top two-thirds = the scanned page (or crop editor); bottom third = live camera with page outline / answer; shutter pinned to the bottom edge. */
 :root {
@@ -58,11 +61,22 @@ button { -webkit-user-select: none; user-select: none; }
 .hint { margin-right: auto; align-self: center; font-size: 0.8rem; color: var(--muted); }
 
 /* Bottom third */
-.panel { background: var(--panel); border-top: 1px solid var(--line); min-height: 0; display: grid; grid-template-rows: 1fr auto; }
+.panel { position: relative; background: var(--panel); border-top: 1px solid var(--line); min-height: 0; display: grid; grid-template-rows: 1fr auto; }
+.panel.reading .bar { display: none; }
+.panel.reading .scroll { padding-bottom: calc(70px + env(safe-area-inset-bottom, 0px)); }
 .view { position: relative; min-height: 0; overflow: hidden; }
 .cam { position: absolute; inset: 0; background: #000; }
 .cam video, .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.cam video { object-fit: cover; }
+.cam video { object-fit: contain; }
+.plus {
+  position: absolute; z-index: 2;
+  right: max(16px, env(safe-area-inset-right, 0px));
+  bottom: calc(8px + env(safe-area-inset-bottom, 0px) * 0.5);
+  width: 46px; height: 46px; border-radius: 50%; border: 2px solid var(--fg); background: var(--bg);
+  color: var(--fg); font: 300 28px/1 var(--font-body); padding: 0 0 3px; cursor: pointer;
+}
+.plus:active { background: var(--press); }
+.plus:focus-visible { outline: 3px solid var(--scan-edge); outline-offset: 3px; }
 .cam canvas { pointer-events: none; }
 .scroll {
   position: absolute; inset: 0; overflow-y: auto;
@@ -72,8 +86,20 @@ button { -webkit-user-select: none; user-select: none; }
 }
 .label { font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 6px; }
 .label.err { color: var(--danger); }
-.text { white-space: pre-wrap; line-height: 1.55; max-width: 65ch; font-size: 1rem; }
+.text { line-height: 1.55; max-width: 65ch; font-size: 1rem; overflow-wrap: anywhere; }
+.text.plain { white-space: pre-wrap; }
 .text.thinking { color: var(--muted); }
+.text > :first-child { margin-top: 0; }
+.text p, .text ul, .text ol { margin: 0 0 0.6em; }
+.text ul, .text ol { padding-left: 1.3em; }
+.text h1, .text h2, .text h3, .text h4 { font: 600 1rem var(--font-body); margin: 1em 0 0.35em; }
+.text strong { font-weight: 600; }
+.text .katex { font-size: 1.08em; }
+.text .katex-display { margin: 0.5em 0; overflow-x: auto; overflow-y: hidden; padding-block: 2px; }
+.text table { border-collapse: collapse; margin: 0.4em 0 0.8em; font-variant-numeric: tabular-nums; display: block; overflow-x: auto; max-width: 100%; }
+.text th, .text td { border-bottom: 1px solid var(--line); padding: 4px 12px 4px 0; text-align: left; white-space: nowrap; }
+.text th { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
+.text code { font-family: var(--font-mono); font-size: 0.9em; }
 
 /* Key form */
 .keyform { display: flex; flex-direction: column; gap: 8px; max-width: 32rem; }
@@ -88,8 +114,8 @@ button { -webkit-user-select: none; user-select: none; }
 /* Shutter bar */
 .bar {
   display: flex; align-items: center; justify-content: center; gap: 14px;
-  padding-top: 10px;
-  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  padding-top: 6px;
+  padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px) * 0.5);
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
@@ -151,25 +177,30 @@ button { -webkit-user-select: none; user-select: none; }
     <button class="shutter" id="shutter" type="button" aria-label="Open camera"></button>
     <div class="side"><button class="ghost" id="stopBtn" type="button" hidden>Stop</button></div>
   </div>
+  <button class="plus" id="plusBtn" type="button" aria-label="New scan" hidden>+</button>
   <input id="fileInput" type="file" accept="image/*" capture="environment" hidden>
 </section>
 
 <script>
 const MODEL = "claude-opus-5-5";
 const KEY_STORE = "snapsolve.apiKey";
-const PROMPT =
-  "The image is a scanned page containing a problem (math, science, a question, a puzzle, or similar). " +
-  "Solve it. Reply with the final answer first, then only the essential steps needed to reach it, " +
-  "one short line each. No preamble, no restating the problem, no extra explanation, no closing remarks. " +
-  "Keep it under 80 words. Plain text, no markdown. If there are several problems, answer each one briefly, numbered. " +
-  "If the image has no readable problem, say so in one line.";
+const PROMPT = `The image is a scanned page with one or more problems (math, physics, engineering, or similar). Solve every problem shown.
+
+Formatting rules (the reply is rendered as Markdown with LaTeX):
+- Write ALL math in LaTeX: inline as $...$, standalone equations as $$...$$. Use real notation: subscripts ($F_{AB}$), fractions ($\\frac{a}{b}$), exponents, Greek letters, $\\sqrt{}$, $\\cdot$, $\\approx$, and units like $12\\,\\text{kN}$. Never write math as words or ASCII (no "sqrt", "^2", "*", "theta" outside LaTeX).
+- For several problems, start each with a bold label such as **Problem 1**.
+- Show only the essential steps: the key equations and results, one line each.
+- Bold every final answer. When listing several results (for example member forces), use a compact Markdown table, and mark tension/compression as (T)/(C).
+- No preamble, no restating the problem, no explanations beyond the steps, no closing remarks.
+
+If the image has no readable problem, say so in one line.`;
 
 const $ = id => document.getElementById(id);
 const video = $("video"), overlay = $("overlay"), cam = $("cam");
 const answerBox = $("answerBox"), ansText = $("ansText"), ansLabel = $("ansLabel");
 const keyForm = $("keyForm"), keyInput = $("keyInput"), keyMsg = $("keyMsg"), keyBtn = $("keyBtn");
 const shutter = $("shutter"), cancelBtn = $("cancelBtn"), stopBtn = $("stopBtn"), fileInput = $("fileInput");
-const statusEl = $("status"), shot = $("shot");
+const statusEl = $("status"), shot = $("shot"), panel = document.querySelector(".panel"), plusBtn = $("plusBtn");
 const adjustBtn = $("adjustBtn"), editCancel = $("editCancel"), editApply = $("editApply"), hint = $("hint");
 
 let stream = null, ctl = null, urls = [], current = null;
@@ -179,7 +210,7 @@ function getKey() { try { return localStorage.getItem(KEY_STORE) || ""; } catch 
 function setKey(k) { try { localStorage.setItem(KEY_STORE, k); return true; } catch { return false; } }
 let memKey = getKey();
 function showKeyForm(msg = "") {
-  stopCamera(); answerBox.hidden = true; keyForm.hidden = false;
+  stopCamera(); setReading(false); answerBox.hidden = true; keyForm.hidden = false;
   keyInput.value = ""; keyMsg.textContent = msg; keyMsg.style.color = msg ? "var(--danger)" : "";
   setStatus("Key needed");
 }
@@ -195,11 +226,32 @@ keyBtn.addEventListener("click", () => keyForm.hidden ? showKeyForm() : (hideKey
 
 /* ---------- UI helpers ---------- */
 function setStatus(t) { statusEl.textContent = t; }
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+// Markdown + LaTeX: pull math out first so Markdown can't mangle it, then render it with KaTeX.
+function renderMd(src) {
+  const math = [];
+  const keep = (t, d) => { math.push({ t, d }); return `@@M${math.length - 1}@@`; };
+  let s = src
+    .replace(/\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g, (m, a, b) => keep(a ?? b, true))
+    .replace(/\\\(([\s\S]+?)\\\)|\$([^\s$](?:[^$\n]*?[^\s$])?)\$/g, (m, a, b) => keep(a ?? b, false))
+    .replace(/</g, "&lt;");
+  let html = window.marked ? marked.parse(s, { gfm: true, breaks: true }) : s.replace(/\n/g, "<br>");
+  return html.replace(/@@M(\d+)@@/g, (m, i) => {
+    const x = math[+i];
+    try { return window.katex ? katex.renderToString(x.t, { displayMode: x.d, throwOnError: false }) : esc(x.t); }
+    catch { return esc(x.t); }
+  });
+}
 function showAnswer(label, text, opts = {}) {
   cam.hidden = true; keyForm.hidden = true; answerBox.hidden = false;
   ansLabel.textContent = label; ansLabel.classList.toggle("err", !!opts.error);
-  ansText.textContent = text; ansText.classList.toggle("thinking", !!opts.muted);
+  ansText.classList.toggle("thinking", !!opts.muted);
+  ansText.classList.toggle("plain", !opts.md);
+  if (opts.md) ansText.innerHTML = renderMd(text); else ansText.textContent = text;
 }
+// Reading mode: answer fills the panel to the bottom; the shutter hides behind a + button.
+function setReading(on) { panel.classList.toggle("reading", on); plusBtn.hidden = !on; }
+plusBtn.addEventListener("click", () => setReading(false));
 function setTools(mode) {
   adjustBtn.hidden = mode !== "scan";
   editCancel.hidden = editApply.hidden = hint.hidden = mode !== "edit";
@@ -351,6 +403,7 @@ function fitCanvas(src, maxSide) {
 /* ---------- Live camera with page outline ---------- */
 let liveQuad = null, liveTimer = 0, rafId = 0;
 async function openCamera() {
+  setReading(false);
   if (!memKey) { showKeyForm(); return; }
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("no camera api");
@@ -390,8 +443,8 @@ function drawOverlay() {
   if (overlay.width !== W || overlay.height !== H) { overlay.width = W; overlay.height = H; }
   const ctx = overlay.getContext("2d"); ctx.clearRect(0, 0, W, H);
   if (!liveQuad) return;
-  // Map video pixels to the object-fit: cover display box.
-  const vw = video.videoWidth, vh = video.videoHeight, s = Math.max(W / vw, H / vh);
+  // Map video pixels to the object-fit: contain display box.
+  const vw = video.videoWidth, vh = video.videoHeight, s = Math.min(W / vw, H / vh);
   const ox = (W - vw * s) / 2, oy = (H - vh * s) / 2;
   const P = liveQuad.map(p => ({ x: p.x * s + ox, y: p.y * s + oy }));
   ctx.fillStyle = "rgba(111,211,168,0.18)"; ctx.strokeStyle = "#6fd3a8"; ctx.lineWidth = 3 * dpr; ctx.lineJoin = "round";
@@ -523,9 +576,10 @@ async function solve(canvas) {
   if (!memKey) { showKeyForm(); return; }
   ctl?.abort();
   const my = new AbortController(); ctl = my;
+  setReading(false);
   shutter.disabled = true; stopBtn.hidden = false;
   showAnswer("Answer · Opus 5.5", "Thinking…", { muted: true });
-  let text = "";
+  let text = "", paint = 0;
   try {
     const data = await toBase64(canvas);
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -537,7 +591,7 @@ async function solve(canvas) {
         "anthropic-dangerous-direct-browser-access": "true",
       },
       body: JSON.stringify({
-        model: MODEL, max_tokens: 8000, stream: true,
+        model: MODEL, max_tokens: 16000, stream: true,
         messages: [{ role: "user", content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
           { type: "text", text: PROMPT },
@@ -562,15 +616,19 @@ async function solve(canvas) {
         let ev; try { ev = JSON.parse(line.slice(5)); } catch { continue; }
         if (ev.type === "message_start") modelUsed = ev.message?.model || "";
         else if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
-          text += ev.delta.text; showAnswer("Answer · Opus 5.5", text);
+          text += ev.delta.text;
+          if (!paint) paint = requestAnimationFrame(() => { paint = 0; if (ctl === my) showAnswer("Answer · Opus 5.5", text, { md: true }); });
         } else if (ev.type === "error") throw { status: ev.error?.type === "overloaded_error" ? 529 : 500, message: ev.error?.message };
       }
     }
     if (!text.trim()) throw { status: 500, message: "No answer came back. Try a clearer photo." };
+    cancelAnimationFrame(paint); paint = 0;
+    showAnswer("Answer · Opus 5.5", text, { md: true });
     setStatus(modelUsed.startsWith(MODEL) ? "Done · Opus 5.5" : "Done");
+    setReading(true);
   } catch (e) {
     if (my.signal.aborted) {
-      if (ctl === my) showAnswer("Stopped", text || "Stopped before an answer.", { muted: !text });
+      if (ctl === my) showAnswer("Stopped", text || "Stopped before an answer.", { muted: !text, md: !!text });
     } else {
       const err = apiError(e?.status, e?.message || (e instanceof TypeError ? "Couldn't reach Anthropic. Check your connection." : ""));
       if (err.key) { showKeyForm(err.text); }
